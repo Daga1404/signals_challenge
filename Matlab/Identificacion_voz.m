@@ -60,7 +60,7 @@ fprintf('Presiona cualquier tecla cuando estés listo para empezar.\n');
 pause;
 
 % Parámetros para la grabación de prueba
-Tblock = 5;
+Tblock = 3;
 fs = 22050;
 Nsamples = Tblock * fs;
 

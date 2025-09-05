@@ -7,9 +7,9 @@
 clearvars; close all; clc;
 
 %% Parámetros de Grabación
-Tblock   = 5;       % 5 segundos por grabación
+Tblock   = 3;       % 5 segundos por grabación
 fs       = 22050;   % Frecuencia de muestreo (Hz)
-Ntakes   = 5;       % 5 tomas por persona
+Ntakes   = 3;       % 5 tomas por persona
 Nsamples = Tblock*fs; % Número de muestras por toma
 
 %% Solicitar nombre de la persona
