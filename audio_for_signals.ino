@@ -21,7 +21,7 @@ int     g_channel = -1;
 bool    g_have_ap = false;
 
 // ---------- Servidor ----------
-#define AUDIO_SERVER_IP   "192.168.137.1"
+#define AUDIO_SERVER_IP   "192.168.137.86"
 #define AUDIO_SERVER_PORT 12345
 
 // ---------- Clave compartida (HEX, 64 chars = 32 bytes) ----------
@@ -34,26 +34,69 @@ static const char* SHARED_KEY_HEX = "83e15c0a2b6a0f6f3a040a9f9b21f3c77e2b6d7d6d6
 #define BUFFER_SIZE   256
 
 #define ENABLE_DSP         1
-#define VOLUME_GAIN        4.0f
-#define ALPHA              0.5f
-#define QUIET_THRESHOLD    .0f
-#define GATE_RELEASE_MS    150
+
+// ----- DSP params -----
+#define VOLUME_GAIN        3.0f     // baja la ganancia por defecto
+#define ALPHA              0.5f     // LPF simple
+// Gate con rampa + histeresis
+#define GATE_ATTACK_MS     5        // subida ~5 ms
+#define GATE_RELEASE_MS    60       // bajada ~60 ms
+#define THRESH_OPEN        120.0f   // abre por encima de esto
+#define THRESH_CLOSE       60.0f    // cierra por debajo de esto
+#define LIMITER_ENABLE     1        // soft-clipper
 
 I2SClass   i2s;
 WiFiClient audioClient;
 
-float prevHP_in=0, prevHP_out=0, prevLP=0;
-int   quietRun=0;
+// Estados de filtros/gate
+float prevHP_in = 0.0f, prevHP_out = 0.0f, prevLP = 0.0f;
+float gateGain = 0.0f;  // empezamos en cero para evitar click al arranque
 static int16_t buf[BUFFER_SIZE];
 
 // -------- Util DSP --------
-inline float highPass(float s){ float o=0.95f*(prevHP_out + s - prevHP_in); prevHP_in=s; prevHP_out=o; return o; }
-inline float lowPass(float s){ float y=ALPHA*s + (1.0f-ALPHA)*prevLP; prevLP=y; return y; }
-inline float applyNoiseGate(float x){
-  const int gateReleaseSamples = (GATE_RELEASE_MS * SAMPLE_RATE) / 1000;
-  if (fabsf(x) < QUIET_THRESHOLD){ if (++quietRun > gateReleaseSamples) return 0.0f; }
-  else quietRun = 0;
-  return x;
+inline float highPass(float s){
+  // coeficiente ligeramente más alto para estabilizar DC si fuera necesario
+  const float a = 0.95f;
+  float o = a * (prevHP_out + s - prevHP_in);
+  prevHP_in = s;
+  prevHP_out = o;
+  return o;
+}
+
+inline float lowPass(float s){
+  float y = ALPHA * s + (1.0f - ALPHA) * prevLP;
+  prevLP = y;
+  return y;
+}
+
+inline float updateGateGain(float levelAbs){
+  // levelAbs = |señal filtrada| (en unidades de muestra int16)
+  const float atkStep = 1.0f / ((GATE_ATTACK_MS  * SAMPLE_RATE) / 1000.0f);
+  const float relStep = 1.0f / ((GATE_RELEASE_MS * SAMPLE_RATE) / 1000.0f);
+
+  static uint8_t state = 1; // 1 = abierto, 0 = cerrado
+  if (state) {
+    if (levelAbs < THRESH_CLOSE) state = 0;
+  } else {
+    if (levelAbs > THRESH_OPEN)  state = 1;
+  }
+
+  if (state) {
+    gateGain += atkStep;
+    if (gateGain > 1.0f) gateGain = 1.0f;
+  } else {
+    gateGain -= relStep;
+    if (gateGain < 0.0f) gateGain = 0.0f;
+  }
+  return gateGain;
+}
+
+inline float softClip(float x){
+  // x en rango int16. Normaliza, comprime, des-normaliza.
+  float xn = x / 32768.0f;
+  float ax = fabsf(xn);
+  float y  = (ax < 1.0f) ? (xn - (xn*xn*xn)/3.0f) : copysignf(2.0f/3.0f, xn);
+  return y * 32767.0f;
 }
 
 // Lee N muestras int16 LE desde I2S
@@ -157,12 +200,6 @@ bool do_authentication(){
     Serial.println("AUTH: fallo HMAC"); return false;
   }
 
-  Serial.printf("[auth.debug] key_len=%u head=%02X%02X%02X%02X\n",
-                (unsigned)keyLen, keyBytes[0], keyBytes[1], keyBytes[2], keyBytes[3]);
-  Serial.print("[auth.debug] nonce="); for(int i=0;i<32;i++){ Serial.printf("%02X", nonce[i]); } Serial.println();
-  Serial.print("[auth.debug] dev_id="); for(int i=0;i<6;i++){ Serial.printf("%02X", mac6[i]); } Serial.println();
-  Serial.print("[auth.debug] tag="); for(int i=0;i<32;i++){ Serial.printf("%02X", tag[i]); } Serial.println();
-
   uint8_t payload[44];
   memcpy(payload, "AUTH1", 5);
   payload[5] = (uint8_t)devLen;
@@ -170,15 +207,10 @@ bool do_authentication(){
   memcpy(payload + 12, tag, 32);
 
   bool sent = sendAll(payload, 12) && sendAll(payload + 12, 32);
-  Serial.printf("[auth.debug] sent AUTH1=%s\n", sent ? "yes" : "no");
   if (!sent) return false;
 
   uint8_t resp[2];
-  if (!recvExact(resp, 2)) {
-    Serial.println("[auth.debug] no response to AUTH1");
-    return false;
-  }
-  Serial.printf("[auth.debug] resp=%c%c\n", resp[0], resp[1]);
+  if (!recvExact(resp, 2)) return false;
   return (resp[0]=='O' && resp[1]=='K');
 }
 
@@ -260,7 +292,7 @@ void applyStaSecurityOnce(){
 }
 // =========================================================
 
-// --- Conexión Wi-Fi con timeout y reintentos (sin set_config durante conexión) ---
+// --- Conexión Wi-Fi con timeout y reintentos ---
 bool connectWiFi(uint8_t maxRetries = WIFI_MAX_RETRIES) {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
@@ -354,18 +386,45 @@ void loop(){
     }
   }
 
+  // Leer
   readSamples(buf, BUFFER_SIZE);
 
 #if ENABLE_DSP
+  // Inicialización de estados al primer bloque para evitar click inicial
+  static bool inited = false;
+  if (!inited){
+    float s0 = (float)buf[0];
+    prevHP_in = s0;
+    prevHP_out = 0.0f;
+    prevLP = s0;
+    gateGain = 0.0f; // arranca cerrado y abre con ataque
+    inited = true;
+  }
+
   for (size_t i=0;i<BUFFER_SIZE;++i){
+    // entrada int16 -> float
     float x  = (float)buf[i];
+
+    // filtros
     float hp = highPass(x);
     float lp = lowPass(hp);
-    float g  = applyNoiseGate(lp);
-    int32_t y = (int32_t)(g * VOLUME_GAIN);
-    if (y > INT16_MAX) y = INT16_MAX;
-    if (y < INT16_MIN) y = INT16_MIN;
-    buf[i] = (int16_t)y;
+
+    // gate con rampa (evita saltos bruscos)
+    float g  = updateGateGain(fabsf(lp));
+    float sig = lp * g;
+
+    // ganancia y limitación suave
+    float pre = sig * VOLUME_GAIN;
+
+  #if LIMITER_ENABLE
+    float y = softClip(pre);
+  #else
+    float y = pre;
+    if (y >  32767.0f) y =  32767.0f;
+    if (y < -32768.0f) y = -32768.0f;
+  #endif
+
+    buf[i] = (int16_t)lrintf(y);
   }
 #endif
 
@@ -375,5 +434,3 @@ void loop(){
   }
   yield();
 }
-
-
