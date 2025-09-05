@@ -1,16 +1,18 @@
+import math
 import socket
 import hmac
 import hashlib
 import struct
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple
 import wave
 from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import sys
 import time
 
-# =========================== Configuración de red / seguridad ===========================
+# --------------------------- Configuración de red / seguridad ---------------------------
 
 HOST = "192.168.137.1"
 PORT = 12345
@@ -20,29 +22,26 @@ SHARED_KEY = bytes.fromhex(SHARED_KEY_HEX)
 
 AUTH_TIMEOUT = 15.0
 
-# =========================== Parámetros de audio / experimento ==========================
+# --------------------------- Parámetros de audio / experimento --------------------------
 
-EXPECTED_SR = 16000          # Hz (ajusta ESP32)
-TAKE_SECONDS = 3.0           # duración por toma
-WARMUP_SECONDS = 0.25        # flush corto antes de cada toma
+EXPECTED_SR = 16000          # Hz (debes alinear el ESP32 a esto)
+TAKE_SECONDS = 3.0           # duración por toma (como en MATLAB)
+WARMUP_SECONDS = 0.25        # pequeño flush antes de cada toma tras pulsar Enter
 
 N_PERSONS = 4
-N_TAKES_TRAIN = 10           # <<--- 10 tomas por persona (entrenamiento)
+N_TAKES_TRAIN = 3            # entrenamiento: 3 tomas por persona
 N_TESTS = 4                  # 4 tomas de prueba
-
-# Nombres para títulos (edítalos si quieres mostrar “gabo”, etc.)
-PERSON_NAMES: List[str] = ["gabo", "persona 2", "persona 3", "persona 4"]
 
 # Bandas FFT para features (log-espaciadas)
 N_BANDS = 12
 FMIN = 80.0
-FMAX = 5000.0                # límite superior visible en gráficas de espectro (como el ejemplo)
+FMAX = 4000.0                # límite superior visible en gráficas de espectro
 
 # Socket
 SOCKET_READ_CHUNK = 16384
 SOCKET_RCVBUF = 262144
 
-# ================================ Utilidades de red =====================================
+# --------------------------- Utilidades de red ------------------------------------------
 
 def _recv_exact(conn: socket.socket, n: int) -> Optional[bytes]:
     buf = bytearray()
@@ -146,7 +145,7 @@ def wait_enter(msg: str = "Presiona Enter para continuar..."):
     except EOFError:
         print("[ui] stdin no disponible; continuando sin pausa")
 
-# ============================ Utilidades de audio / features ============================
+# --------------------------- Utilidades de audio / features -----------------------------
 
 def pcm16_to_float32(x_int16: np.ndarray) -> np.ndarray:
     return (x_int16.astype(np.float32) / 32768.0).clip(-1.0, 1.0)
@@ -156,7 +155,7 @@ def float32_to_pcm16(x_float: np.ndarray) -> np.ndarray:
     return (x * 32767.0).astype(np.int16)
 
 def features_fft_bands(x: np.ndarray, sr: int, band_edges: np.ndarray) -> np.ndarray:
-    """Ventana Hann, FFT (rfft) y energía log10 integrada por bandas [FMIN..FMAX]."""
+    """Ventaneo Hann, FFT (rfft) y energía log10 integrada por bandas [FMIN..FMAX]."""
     N = x.shape[0]
     if N < 2:
         return np.zeros(len(band_edges) - 1, dtype=np.float32)
@@ -165,7 +164,7 @@ def features_fft_bands(x: np.ndarray, sr: int, band_edges: np.ndarray) -> np.nda
     w = 0.5 - 0.5 * np.cos(2.0 * np.pi * n / max(N - 1, 1))
     xw = x.astype(np.float32) * w
 
-    Nfft = 1 << int(np.ceil(np.log2(N)))
+    Nfft = 1 << (int(np.ceil(np.log2(N))))
     X = np.fft.rfft(xw, n=Nfft)
     P = (np.abs(X) ** 2).astype(np.float64) + 1e-12  # potencia
     freqs = np.fft.rfftfreq(Nfft, d=1.0 / sr)
@@ -181,98 +180,70 @@ def features_fft_bands(x: np.ndarray, sr: int, band_edges: np.ndarray) -> np.nda
 def compute_band_edges(fmin: float, fmax: float, nbands: int) -> np.ndarray:
     return np.logspace(np.log10(fmin), np.log10(fmax), nbands + 1)
 
-def _fft_mag_linear(x: np.ndarray, sr: int) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Espectro de amplitud lineal (no dB) de la mitad positiva (rfft),
-    con ventana Hann y normalización de espectro de un solo lado:
-        mag = 2*|X|/N   (mag[0] sin duplicar)
-    """
+def _fft_mag_db(x: np.ndarray, sr: int, fmax: float = FMAX) -> Tuple[np.ndarray, np.ndarray]:
+    """Devuelve (freqs, mag_db) del semiespectro (rfft) con ventana Hann."""
     N = x.size
     if N < 2:
         return np.array([0.0]), np.array([0.0])
     n = np.arange(N, dtype=np.float32)
     w = 0.5 - 0.5 * np.cos(2.0 * np.pi * n / max(N - 1, 1))
     xw = x.astype(np.float32) * w
-
-    Nfft = 1 << int(np.ceil(np.log2(N)))
+    Nfft = 1 << (int(np.ceil(np.log2(N))))
     X = np.fft.rfft(xw, n=Nfft)
+    mag = np.abs(X).astype(np.float64) + 1e-12
+    mag_db = 20.0 * np.log10(mag)
     freqs = np.fft.rfftfreq(Nfft, d=1.0 / sr)
-
-    mag = np.abs(X).astype(np.float64) / N
-    if mag.size > 1:
-        mag[1:-1] *= 2.0
-
-    return freqs, mag
+    sel = freqs <= fmax
+    return freqs[sel], mag_db[sel]
 
 def plot_person_takes(S: np.ndarray, sr: int, person_idx: int, outdir: str):
     """S: [Nsamples, Ntakes, Npersons] (float32 en [-1,1])"""
     Ns, Nt, _ = S.shape
     t = np.arange(Ns) / float(sr)
-    fig_h = max(6, int(Nt * 1.6))  # alto dinámico para 10 subplots
-    fig, axes = plt.subplots(Nt, 1, figsize=(10, fig_h), sharex=True)
+    fig, axes = plt.subplots(Nt, 1, figsize=(10, 6), sharex=True)
     if Nt == 1:
         axes = [axes]
     for k in range(Nt):
         axes[k].plot(t, S[:, k, person_idx], linewidth=1.0)
         axes[k].grid(True)
-        axes[k].set_ylabel("Amplitud")
+        axes[k].set_ylabel("Amp")
         axes[k].set_title(f"Persona {person_idx+1} - Toma {k+1}")
     axes[-1].set_xlabel("Tiempo (s)")
-    fig.suptitle(f"Persona {person_idx+1}: {Nt} tomas (Tiempo)")
+    fig.suptitle(f"Persona {person_idx+1}: 3 tomas (Tiempo)")
     fig.tight_layout()
     fname = os.path.join(outdir, f"persona_{person_idx+1}_tomas_time.png")
     fig.savefig(fname, dpi=150)
     plt.close(fig)
     print(f"[plot] Guardado {fname}")
 
-def plot_person_fft(S: np.ndarray, sr: int, person_idx: int, outdir: str,
-                    fmax: float = FMAX, person_names: Optional[List[str]] = None):
-    """
-    Dibuja UNA figura con las tomas superpuestas (Toma 1..Nt) en amplitud lineal.
-    """
-    _, Nt, _ = S.shape
-    title_name = (person_names[person_idx]
-                  if (person_names is not None and person_idx < len(person_names))
-                  else f"Persona {person_idx+1}")
-
-    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+def plot_person_fft(S: np.ndarray, sr: int, person_idx: int, outdir: str, fmax: float = FMAX):
+    """Grafica el espectro (dB) de las 3 tomas de una persona."""
+    Ns, Nt, _ = S.shape
+    fig, axes = plt.subplots(Nt, 1, figsize=(10, 6), sharex=True)
+    if Nt == 1:
+        axes = [axes]
     for k in range(Nt):
-        freqs, mag = _fft_mag_linear(S[:, k, person_idx], sr)
-        sel = freqs <= fmax
-        ax.plot(freqs[sel], mag[sel], linewidth=1.0, label=f"Toma {k+1}")
-
-    ax.grid(True)
-    ax.set_xlim(0, fmax)
-    ax.set_xlabel("Frecuencia (Hz)")
-    ax.set_ylabel("Amplitud")
-    ax.set_title(f"Comparación del Espectro de Frecuencia para {title_name}")
-    # Colocar la leyenda fuera si hay muchas tomas
-    if Nt > 6:
-        ax.legend(loc="upper right", fontsize=8)
-    else:
-        ax.legend(loc="best")
+        freqs, mag_db = _fft_mag_db(S[:, k, person_idx], sr, fmax=fmax)
+        axes[k].plot(freqs, mag_db, linewidth=1.0)
+        axes[k].grid(True)
+        axes[k].set_ylabel("dB")
+        axes[k].set_title(f"Persona {person_idx+1} - Toma {k+1} (FFT)")
+    axes[-1].set_xlabel("Frecuencia (Hz)")
+    fig.suptitle(f"Persona {person_idx+1}: 3 tomas (FFT)")
     fig.tight_layout()
-
-    try:
-        fig.canvas.manager.set_window_title(f"Espectro de Frecuencia (FFT) - {title_name}")
-    except Exception:
-        pass
-
-    fname = os.path.join(outdir, f"{title_name.replace(' ', '_').lower()}_fft.png")
+    fname = os.path.join(outdir, f"persona_{person_idx+1}_tomas_fft.png")
     fig.savefig(fname, dpi=150)
     plt.close(fig)
     print(f"[plot] Guardado {fname}")
 
 def plot_test_fft(x: np.ndarray, sr: int, outdir: str, j: int, pred_label: int, fmax: float = FMAX):
-    """Espectro de una toma de prueba en amplitud lineal."""
-    freqs, mag = _fft_mag_linear(x, sr)
-    sel = freqs <= fmax
+    """Espectro de una toma de prueba."""
+    freqs, mag_db = _fft_mag_db(x, sr, fmax=fmax)
     fig, ax = plt.subplots(1, 1, figsize=(10, 4))
-    ax.plot(freqs[sel], mag[sel], linewidth=1.0)
+    ax.plot(freqs, mag_db, linewidth=1.0)
     ax.grid(True)
-    ax.set_xlim(0, fmax)
     ax.set_xlabel("Frecuencia (Hz)")
-    ax.set_ylabel("Amplitud")
+    ax.set_ylabel("dB")
     ax.set_title(f"Prueba {j} - FFT (Predicción: Persona {pred_label})")
     fig.tight_layout()
     fname = os.path.join(outdir, f"test_{j}_fft.png")
@@ -280,7 +251,7 @@ def plot_test_fft(x: np.ndarray, sr: int, outdir: str, j: int, pred_label: int, 
     plt.close(fig)
     print(f"[plot] Guardado {fname}")
 
-# =================================== Pipeline ==========================================
+# --------------------------- Pipeline principal -----------------------------------------
 
 def main():
     if len(SHARED_KEY) != 32:
@@ -356,11 +327,10 @@ def main():
         F_train = np.zeros((N_PERSONS * N_TAKES_TRAIN, N_BANDS), dtype=np.float32)
         y_train = np.zeros((N_PERSONS * N_TAKES_TRAIN, ), dtype=np.int32)
 
-        print(f"\n=== ENTRENAMIENTO (4 personas × {N_TAKES_TRAIN} tomas) ===")
+        print("\n=== ENTRENAMIENTO (4 personas × 3 tomas) ===")
         for p in range(N_PERSONS):
             for k in range(N_TAKES_TRAIN):
-                nombre = PERSON_NAMES[p] if p < len(PERSON_NAMES) else f"Persona {p+1}"
-                wait_enter(f"\n>> {nombre} - Toma {k+1}/{N_TAKES_TRAIN}: Presiona Enter y habla {TAKE_SECONDS:.1f}s...")
+                wait_enter(f"\n>> Persona {p+1} - Toma {k+1}/{N_TAKES_TRAIN}: Presiona Enter y empieza a hablar {TAKE_SECONDS:.1f}s...")
                 # Drenar backlog + warm-up
                 drain_socket(conn, max_drain_sec=0.5)
                 warm_bytes = int(WARMUP_SECONDS * sr * align)
@@ -375,7 +345,7 @@ def main():
                 # Alinear y convertir a float
                 usable = len(payload) - (len(payload) % align)
                 payload = payload[:usable]
-                x_i16 = np.frombuffer(payload, dtype="<i2")  # PCM16 LE
+                x_i16 = np.frombuffer(payload, dtype="<i2")  # PCM16 little-endian
                 x = pcm16_to_float32(x_i16)
                 if x.size > Nsamples_take:
                     x = x[:Nsamples_take]
@@ -391,11 +361,11 @@ def main():
 
                 S_train[:, k, p] = x
 
-        # --- Graficar entrenamiento (Tiempo y FFT superpuestas)
+        # --- Graficar entrenamiento (Tiempo y FFT: 3 tomas por persona)
         print("\n[plot] Generando figuras de entrenamiento…")
         for p in range(N_PERSONS):
-            plot_person_takes(S_train, sr, p, outdir)  # tiempo
-            plot_person_fft(S_train, sr, p, outdir, fmax=FMAX, person_names=PERSON_NAMES)
+            plot_person_takes(S_train, sr, p, outdir)
+            plot_person_fft(S_train, sr, p, outdir, fmax=FMAX)
 
         # --- Features entrenamiento + centroides
         print("[feat] Extrayendo features (bandas FFT)…")
@@ -457,7 +427,7 @@ def main():
 
             print(f"[pred] Toma de prueba {j+1} -> Persona {pred+1}  (distancias: {', '.join(f'{d:.3f}' for d in dists)})")
 
-            # Gráfica FFT (lineal) de la toma de prueba
+            # --- Grafica FFT de la toma de prueba
             plot_test_fft(x, sr, outdir, j+1, pred+1, fmax=FMAX)
 
         # --- Tabla simple de resultados
