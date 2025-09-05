@@ -27,7 +27,7 @@ TAKE_SECONDS = 3.0           # duración por toma
 WARMUP_SECONDS = 0.25        # flush corto antes de cada toma
 
 N_PERSONS = 4
-N_TAKES_TRAIN = 3            # 3 tomas por persona (entrenamiento)
+N_TAKES_TRAIN = 10           # <<--- 10 tomas por persona (entrenamiento)
 N_TESTS = 4                  # 4 tomas de prueba
 
 # Nombres para títulos (edítalos si quieres mostrar “gabo”, etc.)
@@ -208,7 +208,8 @@ def plot_person_takes(S: np.ndarray, sr: int, person_idx: int, outdir: str):
     """S: [Nsamples, Ntakes, Npersons] (float32 en [-1,1])"""
     Ns, Nt, _ = S.shape
     t = np.arange(Ns) / float(sr)
-    fig, axes = plt.subplots(Nt, 1, figsize=(10, 6), sharex=True)
+    fig_h = max(6, int(Nt * 1.6))  # alto dinámico para 10 subplots
+    fig, axes = plt.subplots(Nt, 1, figsize=(10, fig_h), sharex=True)
     if Nt == 1:
         axes = [axes]
     for k in range(Nt):
@@ -217,7 +218,7 @@ def plot_person_takes(S: np.ndarray, sr: int, person_idx: int, outdir: str):
         axes[k].set_ylabel("Amplitud")
         axes[k].set_title(f"Persona {person_idx+1} - Toma {k+1}")
     axes[-1].set_xlabel("Tiempo (s)")
-    fig.suptitle(f"Persona {person_idx+1}: 3 tomas (Tiempo)")
+    fig.suptitle(f"Persona {person_idx+1}: {Nt} tomas (Tiempo)")
     fig.tight_layout()
     fname = os.path.join(outdir, f"persona_{person_idx+1}_tomas_time.png")
     fig.savefig(fname, dpi=150)
@@ -227,7 +228,7 @@ def plot_person_takes(S: np.ndarray, sr: int, person_idx: int, outdir: str):
 def plot_person_fft(S: np.ndarray, sr: int, person_idx: int, outdir: str,
                     fmax: float = FMAX, person_names: Optional[List[str]] = None):
     """
-    Dibuja UNA figura con las 3 tomas superpuestas (Toma 1..3) en amplitud lineal.
+    Dibuja UNA figura con las tomas superpuestas (Toma 1..Nt) en amplitud lineal.
     """
     _, Nt, _ = S.shape
     title_name = (person_names[person_idx]
@@ -245,7 +246,11 @@ def plot_person_fft(S: np.ndarray, sr: int, person_idx: int, outdir: str,
     ax.set_xlabel("Frecuencia (Hz)")
     ax.set_ylabel("Amplitud")
     ax.set_title(f"Comparación del Espectro de Frecuencia para {title_name}")
-    ax.legend(loc="best")
+    # Colocar la leyenda fuera si hay muchas tomas
+    if Nt > 6:
+        ax.legend(loc="upper right", fontsize=8)
+    else:
+        ax.legend(loc="best")
     fig.tight_layout()
 
     try:
@@ -351,7 +356,7 @@ def main():
         F_train = np.zeros((N_PERSONS * N_TAKES_TRAIN, N_BANDS), dtype=np.float32)
         y_train = np.zeros((N_PERSONS * N_TAKES_TRAIN, ), dtype=np.int32)
 
-        print("\n=== ENTRENAMIENTO (4 personas × 3 tomas) ===")
+        print(f"\n=== ENTRENAMIENTO (4 personas × {N_TAKES_TRAIN} tomas) ===")
         for p in range(N_PERSONS):
             for k in range(N_TAKES_TRAIN):
                 nombre = PERSON_NAMES[p] if p < len(PERSON_NAMES) else f"Persona {p+1}"
