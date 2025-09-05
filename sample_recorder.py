@@ -22,11 +22,11 @@ AUTH_TIMEOUT = 15.0
 # ====================== Parámetros del experimento ============================
 EXPECTED_SR = 16000
 TAKE_SECONDS = 3.0
-WARMUP_SECONDS = 0.3
+WARMUP_SECONDS = 0.25
 
-N_PERSONS = 1
-N_TAKES_TRAIN = 3
-PERSON_NAMES: List[str] = ["david"]
+N_PERSONS = 3
+N_TAKES_TRAIN = 5
+PERSON_NAMES: List[str] = ["david", "gal", "gabo"]
 
 # FFT para gráficas (lineal)
 FMAX = 5000.0
