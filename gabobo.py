@@ -35,7 +35,7 @@ N_TESTS = 4                  # 4 tomas de prueba
 # Bandas FFT para features (log-espaciadas)
 N_BANDS = 12
 FMIN = 80.0
-FMAX = 4000.0
+FMAX = 4000.0                # límite superior visible en gráficas de espectro
 
 # Socket
 SOCKET_READ_CHUNK = 16384
@@ -159,7 +159,7 @@ def features_fft_bands(x: np.ndarray, sr: int, band_edges: np.ndarray) -> np.nda
     N = x.shape[0]
     if N < 2:
         return np.zeros(len(band_edges) - 1, dtype=np.float32)
-    # Hann manual (evita dependencias)
+    # Hann manual
     n = np.arange(N, dtype=np.float32)
     w = 0.5 - 0.5 * np.cos(2.0 * np.pi * n / max(N - 1, 1))
     xw = x.astype(np.float32) * w
@@ -180,6 +180,22 @@ def features_fft_bands(x: np.ndarray, sr: int, band_edges: np.ndarray) -> np.nda
 def compute_band_edges(fmin: float, fmax: float, nbands: int) -> np.ndarray:
     return np.logspace(np.log10(fmin), np.log10(fmax), nbands + 1)
 
+def _fft_mag_db(x: np.ndarray, sr: int, fmax: float = FMAX) -> Tuple[np.ndarray, np.ndarray]:
+    """Devuelve (freqs, mag_db) del semiespectro (rfft) con ventana Hann."""
+    N = x.size
+    if N < 2:
+        return np.array([0.0]), np.array([0.0])
+    n = np.arange(N, dtype=np.float32)
+    w = 0.5 - 0.5 * np.cos(2.0 * np.pi * n / max(N - 1, 1))
+    xw = x.astype(np.float32) * w
+    Nfft = 1 << (int(np.ceil(np.log2(N))))
+    X = np.fft.rfft(xw, n=Nfft)
+    mag = np.abs(X).astype(np.float64) + 1e-12
+    mag_db = 20.0 * np.log10(mag)
+    freqs = np.fft.rfftfreq(Nfft, d=1.0 / sr)
+    sel = freqs <= fmax
+    return freqs[sel], mag_db[sel]
+
 def plot_person_takes(S: np.ndarray, sr: int, person_idx: int, outdir: str):
     """S: [Nsamples, Ntakes, Npersons] (float32 en [-1,1])"""
     Ns, Nt, _ = S.shape
@@ -193,9 +209,44 @@ def plot_person_takes(S: np.ndarray, sr: int, person_idx: int, outdir: str):
         axes[k].set_ylabel("Amp")
         axes[k].set_title(f"Persona {person_idx+1} - Toma {k+1}")
     axes[-1].set_xlabel("Tiempo (s)")
-    fig.suptitle(f"Persona {person_idx+1}: 3 tomas")
+    fig.suptitle(f"Persona {person_idx+1}: 3 tomas (Tiempo)")
     fig.tight_layout()
-    fname = os.path.join(outdir, f"persona_{person_idx+1}_tomas.png")
+    fname = os.path.join(outdir, f"persona_{person_idx+1}_tomas_time.png")
+    fig.savefig(fname, dpi=150)
+    plt.close(fig)
+    print(f"[plot] Guardado {fname}")
+
+def plot_person_fft(S: np.ndarray, sr: int, person_idx: int, outdir: str, fmax: float = FMAX):
+    """Grafica el espectro (dB) de las 3 tomas de una persona."""
+    Ns, Nt, _ = S.shape
+    fig, axes = plt.subplots(Nt, 1, figsize=(10, 6), sharex=True)
+    if Nt == 1:
+        axes = [axes]
+    for k in range(Nt):
+        freqs, mag_db = _fft_mag_db(S[:, k, person_idx], sr, fmax=fmax)
+        axes[k].plot(freqs, mag_db, linewidth=1.0)
+        axes[k].grid(True)
+        axes[k].set_ylabel("dB")
+        axes[k].set_title(f"Persona {person_idx+1} - Toma {k+1} (FFT)")
+    axes[-1].set_xlabel("Frecuencia (Hz)")
+    fig.suptitle(f"Persona {person_idx+1}: 3 tomas (FFT)")
+    fig.tight_layout()
+    fname = os.path.join(outdir, f"persona_{person_idx+1}_tomas_fft.png")
+    fig.savefig(fname, dpi=150)
+    plt.close(fig)
+    print(f"[plot] Guardado {fname}")
+
+def plot_test_fft(x: np.ndarray, sr: int, outdir: str, j: int, pred_label: int, fmax: float = FMAX):
+    """Espectro de una toma de prueba."""
+    freqs, mag_db = _fft_mag_db(x, sr, fmax=fmax)
+    fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+    ax.plot(freqs, mag_db, linewidth=1.0)
+    ax.grid(True)
+    ax.set_xlabel("Frecuencia (Hz)")
+    ax.set_ylabel("dB")
+    ax.set_title(f"Prueba {j} - FFT (Predicción: Persona {pred_label})")
+    fig.tight_layout()
+    fname = os.path.join(outdir, f"test_{j}_fft.png")
     fig.savefig(fname, dpi=150)
     plt.close(fig)
     print(f"[plot] Guardado {fname}")
@@ -274,7 +325,7 @@ def main():
         # --- Contenedores entrenamiento
         S_train = np.zeros((Nsamples_take, N_TAKES_TRAIN, N_PERSONS), dtype=np.float32)
         F_train = np.zeros((N_PERSONS * N_TAKES_TRAIN, N_BANDS), dtype=np.float32)
-        y_train = np.zeros((N_PERSONS * N_TAKES_TRAIN,), dtype=np.int32)
+        y_train = np.zeros((N_PERSONS * N_TAKES_TRAIN, ), dtype=np.int32)
 
         print("\n=== ENTRENAMIENTO (4 personas × 3 tomas) ===")
         for p in range(N_PERSONS):
@@ -310,10 +361,11 @@ def main():
 
                 S_train[:, k, p] = x
 
-        # --- Graficar entrenamiento (3 tomas por persona)
+        # --- Graficar entrenamiento (Tiempo y FFT: 3 tomas por persona)
         print("\n[plot] Generando figuras de entrenamiento…")
         for p in range(N_PERSONS):
             plot_person_takes(S_train, sr, p, outdir)
+            plot_person_fft(S_train, sr, p, outdir, fmax=FMAX)
 
         # --- Features entrenamiento + centroides
         print("[feat] Extrayendo features (bandas FFT)…")
@@ -374,6 +426,9 @@ def main():
             preds.append(pred + 1)        # 1..4 para imprimir
 
             print(f"[pred] Toma de prueba {j+1} -> Persona {pred+1}  (distancias: {', '.join(f'{d:.3f}' for d in dists)})")
+
+            # --- Grafica FFT de la toma de prueba
+            plot_test_fft(x, sr, outdir, j+1, pred+1, fmax=FMAX)
 
         # --- Tabla simple de resultados
         print("\n=== RESULTADOS DE PREDICCIÓN ===")
