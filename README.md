@@ -86,7 +86,7 @@ pip install numpy
 
 1. **Update server configuration** in `src/main.py`:
    ```python
-   HOST = "0.0.0.0"  # Listen on all interfaces
+   HOST = "0.0.0.0"  # Replace with your Python server IP
    PORT = 12345
    ```
 
