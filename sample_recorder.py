@@ -59,7 +59,7 @@ def _send_all(conn: socket.socket, data: bytes) -> bool:
 
 def _auth_handshake(conn: socket.socket, timeout: float = AUTH_TIMEOUT) -> bool:
     conn.settimeout(timeout)
-    nonce = np.random.bytes(32)
+    nonce = os.urandom(32)
     if not _send_all(conn, nonce):
         print("[auth] Falló envío de nonce")
         return False
