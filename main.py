@@ -102,7 +102,7 @@ def _send_all(conn: socket.socket, data: bytes) -> bool:
 
 def _auth_handshake(conn: socket.socket, key: bytes, timeout: float = AUTH_TIMEOUT) -> bool:
     conn.settimeout(timeout)
-    nonce = np.random.bytes(32)
+    nonce = os.urandom(32)
     if not _send_all(conn, nonce): return False
     head = _recv_exact(conn, 6)
     if head is None or head[:5] != b"AUTH1": return False
