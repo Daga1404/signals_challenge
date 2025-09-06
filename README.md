@@ -1,6 +1,5 @@
 # Voice Recognition System with ESP32-S3
 
-A comprehensive voice identification system that uses an ESP32-S3 microcontroller for audio capture and Python for machine learning-based voice recognition. The system can record training samples from multiple people and then classify new voice samples to identify the speaker.
 A comprehensive voice identification system implemented in two ways: using an ESP32-S3 microcontroller with Python for machine learning-based voice recognition, and using Matlab for signal processing and classification. Both approaches allow recording training samples from multiple people and classifying new voice samples to identify the speaker.
 
 ## 🎯 Project Overview
