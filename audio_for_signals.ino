@@ -5,10 +5,7 @@
 #include <mbedtls/md.h>   // HMAC-SHA256
 #include <math.h>
 #include <esp_wifi.h>     // razones de desconexión, país, protocolo
-
-// ---------- Wi-Fi ----------
-const char* SSID = "DAVID";  // cámbialo si usas hotspot
-const char* PASS = "Daga#1404";
+#include "config.h"
 
 // Retry Wi-Fi
 const uint32_t WIFI_CONNECT_TIMEOUT_MS = 10000;
@@ -19,13 +16,6 @@ const uint32_t WIFI_BACKOFF_BASE_MS    = 1000;
 uint8_t g_bssid[6];
 int     g_channel = -1;
 bool    g_have_ap = false;
-
-// ---------- Servidor ----------
-#define AUDIO_SERVER_IP   "192.168.137.86"
-#define AUDIO_SERVER_PORT 12345
-
-// ---------- Clave compartida (HEX, 64 chars = 32 bytes) ----------
-static const char* SHARED_KEY_HEX = "83e15c0a2b6a0f6f3a040a9f9b21f3c77e2b6d7d6d6e1e4a2b8c1d2e3f405062";
 
 // ---------- Audio ----------
 #define SAMPLE_RATE   16000U
@@ -55,7 +45,6 @@ static int16_t buf[BUFFER_SIZE];
 
 // -------- Util DSP --------
 inline float highPass(float s){
-  // coeficiente ligeramente más alto para estabilizar DC si fuera necesario
   const float a = 0.95f;
   float o = a * (prevHP_out + s - prevHP_in);
   prevHP_in = s;
@@ -70,7 +59,6 @@ inline float lowPass(float s){
 }
 
 inline float updateGateGain(float levelAbs){
-  // levelAbs = |señal filtrada| (en unidades de muestra int16)
   const float atkStep = 1.0f / ((GATE_ATTACK_MS  * SAMPLE_RATE) / 1000.0f);
   const float relStep = 1.0f / ((GATE_RELEASE_MS * SAMPLE_RATE) / 1000.0f);
 
@@ -92,7 +80,6 @@ inline float updateGateGain(float levelAbs){
 }
 
 inline float softClip(float x){
-  // x en rango int16. Normaliza, comprime, des-normaliza.
   float xn = x / 32768.0f;
   float ax = fabsf(xn);
   float y  = (ax < 1.0f) ? (xn - (xn*xn*xn)/3.0f) : copysignf(2.0f/3.0f, xn);
@@ -304,9 +291,9 @@ bool connectWiFi(uint8_t maxRetries = WIFI_MAX_RETRIES) {
   Serial.println("Conectando a Wi-Fi");
   for (uint8_t attempt = 1; attempt <= maxRetries; ++attempt) {
     if (g_have_ap && g_channel > 0) {
-      WiFi.begin(SSID, PASS, g_channel, g_bssid, true);
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD, g_channel, g_bssid, true);
     } else {
-      WiFi.begin(SSID, PASS);
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     }
 
     uint32_t start = millis();
@@ -339,8 +326,8 @@ void setup(){
   wifi_country_t c = {"MX", 1, 13, WIFI_COUNTRY_POLICY_MANUAL};
   esp_wifi_set_country(&c);
 
-  scanAndReport(SSID);
-  findTargetAp(SSID);     // fija canal/BSSID si está visible
+  scanAndReport(WIFI_SSID);
+  findTargetAp(WIFI_SSID);     // fija canal/BSSID si está visible
   applyStaSecurityOnce(); // configura WPA2 + PMF opcional una sola vez
 
   connectWiFi(); // si falla, loop() seguirá intentando
@@ -356,7 +343,7 @@ void loop(){
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Wi-Fi desconectado. Reintentando...");
     // vuelve a buscar canal/BSSID por si el AP cambió
-    findTargetAp(SSID);
+    findTargetAp(WIFI_SSID);
     if (!connectWiFi()) { delay(1000); return; }
   }
 
@@ -402,18 +389,11 @@ void loop(){
   }
 
   for (size_t i=0;i<BUFFER_SIZE;++i){
-    // entrada int16 -> float
     float x  = (float)buf[i];
-
-    // filtros
     float hp = highPass(x);
     float lp = lowPass(hp);
-
-    // gate con rampa (evita saltos bruscos)
     float g  = updateGateGain(fabsf(lp));
     float sig = lp * g;
-
-    // ganancia y limitación suave
     float pre = sig * VOLUME_GAIN;
 
   #if LIMITER_ENABLE

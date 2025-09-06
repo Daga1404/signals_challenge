@@ -10,12 +10,15 @@ import matplotlib.pyplot as plt
 import os
 import time
 import threading
+from dotenv import load_dotenv
 
 # ====================== Configuración de red / seguridad ======================
-HOST = "192.168.137.1"
-PORT = 12345
+load_dotenv()  # busca el archivo .env automáticamente
 
-SHARED_KEY_HEX = "83e15c0a2b6a0f6f3a040a9f9b21f3c77e2b6d7d6d6e1e4a2b8c1d2e3f405062"
+HOST = os.getenv("ESP_HOST")
+PORT = int(os.getenv("ESP_PORT"))
+SHARED_KEY_HEX = str(os.getenv("ESP_SHARED_KEY_HEX"))
+
 SHARED_KEY = bytes.fromhex(SHARED_KEY_HEX)
 AUTH_TIMEOUT = 15.0
 

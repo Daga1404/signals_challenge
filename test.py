@@ -5,16 +5,18 @@ import wave
 import socket
 import hmac
 import hashlib
-import struct
 import time
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple
 import numpy as np
-import matplotlib.pyplot as plt
+from dotenv import load_dotenv
 
 # ====================== Config comunes (mismo puerto/clave) ====================
-HOST = "192.168.137.1"
-PORT = 12345
-SHARED_KEY_HEX = "83e15c0a2b6a0f6f3a040a9f9b21f3c77e2b6d7d6d6e1e4a2b8c1d2e3f405062"
+load_dotenv()  # busca el archivo .env automáticamente
+
+HOST = os.getenv("ESP_HOST")
+PORT = int(os.getenv("ESP_PORT"))
+SHARED_KEY_HEX = str(os.getenv("ESP_SHARED_KEY_HEX"))
+
 SHARED_KEY = bytes.fromhex(SHARED_KEY_HEX)
 AUTH_TIMEOUT = 15.0
 
