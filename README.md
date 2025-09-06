@@ -65,10 +65,10 @@ pip install numpy
 
 ### 1. ESP32 Audio Streaming Setup
 
-1. **Configure WiFi credentials** in `src/audio_for_signals.ino`:
+1. **Configure WiFi credentials** in `src/config.h`:
    ```cpp
-   const char* SSID = "YOUR_WIFI_SSID";
-   const char* PASS = "YOUR_WIFI_PASSWORD";
+   #define WIFI_SSID "YOUR_WIFI_SSID"
+   #define WIFI_PASS "YOUR_WIFI_PASSWORD"
    ```
 
 2. **Set server IP** in the Arduino code:
