@@ -1,6 +1,7 @@
 # Voice Recognition System with ESP32-S3
 
 A comprehensive voice identification system that uses an ESP32-S3 microcontroller for audio capture and Python for machine learning-based voice recognition. The system can record training samples from multiple people and then classify new voice samples to identify the speaker.
+A comprehensive voice identification system implemented in two ways: using an ESP32-S3 microcontroller with Python for machine learning-based voice recognition, and using Matlab for signal processing and classification. Both approaches allow recording training samples from multiple people and classifying new voice samples to identify the speaker.
 
 ## 🎯 Project Overview
 
@@ -181,6 +182,28 @@ signals_challenge/
     ├── predictions.csv     # Classification results
     └── *.png              # Generated plots
 ```
+
+## 🧑‍🔬 Matlab Implementation
+
+In addition to the Arduino+Python workflow, the project includes a full Matlab implementation for voice recognition. The Matlab approach allows you to:
+
+- Record and process audio samples using Matlab scripts.
+- Perform feature extraction, visualization, and classification directly in Matlab.
+- Compare results and experiment with different DSP and ML techniques.
+
+### Matlab Folder Contents
+
+The `Matlab/` directory contains:
+- `Identificacion_voz.m`: Main Matlab script for voice identification and analysis.
+- `recopilacion_datos.m`: Script for collecting and organizing voice data in Matlab.
+- `datos_David.mat`, `datos_gabo.mat`, `datos_Gal.mat`: Example Matlab data files containing recorded voice samples for different speakers.
+
+You can use these scripts to:
+- Explore and visualize audio signals in Matlab.
+- Test alternative DSP or ML approaches.
+- Compare Matlab results with the Python-based pipeline.
+
+**Note:** The Matlab workflow is independent and does not require the ESP32 or Python scripts. It is useful for research, prototyping, and educational purposes, and provides a reference for signal processing and classification techniques.
 
 ## 🔧 Technical Details
 
