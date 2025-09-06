@@ -266,7 +266,7 @@ def main():
         # WAV header
         hdr = _recv_exact(conn, 44)
         if hdr is None: print("[wav] No se recibió cabecera WAV"); return
-        # Validación simple (no re-usamos todo el parser)
+        # Validación simple (no re-usamos el parser completo)
         if hdr[0:4] != b"RIFF" or hdr[8:12] != b"WAVE":
             print("[wav] Cabecera no WAVE"); return
 
