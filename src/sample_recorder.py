@@ -1,6 +1,5 @@
 import os
 import wave
-import time
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
