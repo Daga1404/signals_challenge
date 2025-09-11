@@ -18,7 +18,7 @@ python example_usage.py
 python src/sample_recorder.py
 
 # 5. Test voice recognition  
-python src/main.py run_YYYYMMDD_HHMMSS
+python src/main.py run
 ```
 
 ## 🎯 Overview
@@ -344,7 +344,7 @@ Contributions are welcome! Areas for improvement:
 
 ## 📄 License
 
-This project is open source. Please check the repository for specific license terms.
+This project is open source.
 
 ## 🙋 Support
 
