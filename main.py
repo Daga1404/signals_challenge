@@ -2,30 +2,21 @@ import os
 import sys
 import glob
 import wave
-import socket
-import hmac
-import hashlib
 import time
 from typing import Optional, Tuple
 import numpy as np
 from dotenv import load_dotenv
 
-# ====================== Config comunes (mismo puerto/clave) ====================
-load_dotenv()  # busca el archivo .env automáticamente
+# ============== deps para micrófono ==============
+import sounddevice as sd
 
-HOST = os.getenv("ESP_HOST")
-PORT = int(os.getenv("ESP_PORT"))
-SHARED_KEY_HEX = str(os.getenv("ESP_SHARED_KEY_HEX"))
+# ====================== Config ====================
+load_dotenv()  # por compatibilidad, aunque ya no usamos HOST/PORT
+AUTH_TIMEOUT = 15.0  # sin uso real aquí, se mantiene por compatibilidad
 
-SHARED_KEY = bytes.fromhex(SHARED_KEY_HEX)
-AUTH_TIMEOUT = 15.0
-
-# Si NO hay test_*.wav en la carpeta, podemos grabar aquí:
 RECORD_TESTS_IF_MISSING = True
-N_TESTS = 4
+N_TESTS = 6
 WARMUP_SECONDS = 0.25
-SOCKET_READ_CHUNK = 16384
-SOCKET_RCVBUF = 262144
 
 # ====================== Utilidades WAV / features ==============================
 def read_wav_float(path: str) -> Tuple[np.ndarray, int]:
@@ -54,8 +45,22 @@ def features_fft_bands(x: np.ndarray, sr: int, band_edges: np.ndarray) -> np.nda
         fb[i] = np.log10(s)
     return fb
 
-def compute_band_edges(fmin: float, fmax: float, nbands: int) -> np.ndarray:
-    return np.logspace(np.log10(fmin), np.log10(fmax), nbands + 1)
+# === NUEVO: bandas con alta resolución en graves ===
+FMIN = 50.0
+FSPLIT = 300.0
+FMAX_BANDS = 3500.0
+N_LOW = 18
+N_HIGH = 14
+
+def compute_band_edges(fmin: float = FMIN,
+                       fsplit: float = FSPLIT,
+                       fmax: float = FMAX_BANDS,
+                       n_low: int = N_LOW,
+                       n_high: int = N_HIGH) -> np.ndarray:
+    low_edges = np.linspace(fmin, fsplit, n_low + 1)          # lineal denso en graves
+    high_edges = np.logspace(np.log10(fsplit), np.log10(fmax), n_high + 1)  # log arriba
+    edges = np.concatenate([low_edges[:-1], high_edges])       # evita duplicar fsplit
+    return edges
 
 def _fft_mag_linear(x: np.ndarray, sr: int):
     N = x.size
@@ -71,8 +76,8 @@ def _fft_mag_linear(x: np.ndarray, sr: int):
     return freqs, mag
 
 def plot_test_fft(x: np.ndarray, sr: int, outdir: str, j: int, pred_label: int, fmax: float):
-    freqs, mag = _fft_mag_linear(x, sr); sel = freqs<=fmax
     import matplotlib.pyplot as plt
+    freqs, mag = _fft_mag_linear(x, sr); sel = freqs<=fmax
     fig, ax = plt.subplots(1,1, figsize=(10,4))
     ax.plot(freqs[sel], mag[sel], linewidth=1.0)
     ax.grid(True); ax.set_xlim(0,fmax)
@@ -83,74 +88,11 @@ def plot_test_fft(x: np.ndarray, sr: int, outdir: str, j: int, pred_label: int, 
     fig.savefig(fname, dpi=150); plt.close(fig)
     print(f"[plot] Guardado {fname}")
 
-# ====================== Red para grabar pruebas (si hace falta) ================
-def _recv_exact(conn: socket.socket, n: int) -> Optional[bytes]:
-    buf = bytearray()
-    while len(buf) < n:
-        chunk = conn.recv(n - len(buf))
-        if not chunk: return None
-        buf.extend(chunk)
-    return bytes(buf)
-
-def _send_all(conn: socket.socket, data: bytes) -> bool:
-    total = 0
-    while total < len(data):
-        sent = conn.send(data[total:])
-        if sent <= 0: return False
-        total += sent
-    return True
-
-def _auth_handshake(conn: socket.socket, key: bytes, timeout: float = AUTH_TIMEOUT) -> bool:
-    conn.settimeout(timeout)
-    nonce = np.random.bytes(32)
-    if not _send_all(conn, nonce): return False
-    head = _recv_exact(conn, 6)
-    if head is None or head[:5] != b"AUTH1": return False
-    dev_len = head[5]
-    if dev_len < 1 or dev_len > 64: return False
-    dev_id = _recv_exact(conn, dev_len)
-    tag = _recv_exact(conn, 32)
-    if dev_id is None or tag is None: return False
-    mac = hmac.new(key, nonce + dev_id, hashlib.sha256).digest()
-    ok = hmac.compare_digest(mac, tag)
-    _send_all(conn, b"OK" if ok else b"NO")
-    conn.settimeout(None)
-    return ok
-
-def drain_socket(conn: socket.socket, max_drain_sec: float = 0.5) -> int:
-    drained = 0
-    prev_to = conn.gettimeout()
-    try:
-        conn.settimeout(0.001); t0 = time.time()
-        while time.time()-t0 < max_drain_sec:
-            try:
-                chunk = conn.recv(SOCKET_READ_CHUNK)
-                if not chunk: break
-                drained += len(chunk)
-            except socket.timeout:
-                break
-    finally:
-        conn.settimeout(prev_to)
-    return drained
-
-def recv_audio_bytes(conn: socket.socket, n_bytes: int) -> Optional[bytes]:
-    buf = bytearray()
-    while len(buf) < n_bytes:
-        chunk = conn.recv(min(SOCKET_READ_CHUNK, n_bytes - len(buf)))
-        if not chunk: return None
-        buf.extend(chunk)
-    return bytes(buf)
-
-def float32_to_pcm16(x_float: np.ndarray) -> np.ndarray:
-    x = np.clip(x_float, -1.0, 1.0)
-    return (x * 32767.0).astype("<i2")
-
 # ====================== Modelo (centroides) ===================================
 def build_model_from_folder(run_dir: str):
-    # Carga metadatos
     meta_path = os.path.join(run_dir, "meta.npz")
     if not os.path.isfile(meta_path):
-        raise SystemExit(f"[fatal] No existe {meta_path}. Genera la carpeta con grabacion_muestras.py")
+        raise SystemExit(f"[fatal] No existe {meta_path}. Genera la carpeta con recolección de muestras")
     meta = np.load(meta_path, allow_pickle=True)
     sr = int(meta["sr"]); take_seconds = float(meta["take_seconds"])
     n_persons = int(meta["n_persons"]); n_takes = int(meta["n_takes_train"])
@@ -158,14 +100,10 @@ def build_model_from_folder(run_dir: str):
     fmax = float(meta["fmax"])
     print(f"[meta] sr={sr}, personas={n_persons}, tomas/persona={n_takes}")
 
-    # Bandas para features (mismas que en entrenamiento)
-    FMIN, FMAX, N_BANDS = 80.0, 5000.0, 12
-    band_edges = compute_band_edges(FMIN, FMAX, N_BANDS)
+    band_edges = compute_band_edges()  # NUEVO esquema de bandas
 
-    # Cargar WAVs de entrenamiento
     Nsamples_take = int(sr * take_seconds)
-    F_train = []
-    y_train = []
+    F_train = []; y_train = []
     for p in range(1, n_persons+1):
         for k in range(1, n_takes+1):
             path = os.path.join(run_dir, f"train_p{p}_t{k}.wav")
@@ -175,13 +113,15 @@ def build_model_from_folder(run_dir: str):
             assert sr_w == sr, f"{path}: sr distinta ({sr_w})"
             if x.size > Nsamples_take: x = x[:Nsamples_take]
             elif x.size < Nsamples_take: x = np.pad(x, (0, Nsamples_take - x.size))
+            # === NUEVO: normalización RMS por toma ===
+            rms = float(np.sqrt(np.mean(x**2)) + 1e-12)
+            x = (x / rms).clip(-1.0, 1.0)
             fb = features_fft_bands(x, sr, band_edges)
             F_train.append(fb); y_train.append(p-1)
 
     F_train = np.vstack(F_train).astype(np.float32)
     y_train = np.array(y_train, dtype=np.int32)
 
-    # z-score + centroides
     muF = F_train.mean(axis=0, keepdims=True)
     sigmaF = F_train.std(axis=0, keepdims=True) + 1e-9
     Fz = (F_train - muF) / sigmaF
@@ -190,28 +130,50 @@ def build_model_from_folder(run_dir: str):
     for p in range(n_classes):
         centroids[p, :] = Fz[y_train == p, :].mean(axis=0)
 
-    model = {
+    return {
         "sr": sr, "take_seconds": take_seconds,
         "band_edges": band_edges, "muF": muF, "sigmaF": sigmaF,
         "centroids": centroids, "names": names, "fmax": fmax
     }
-    return model
 
-def classify_vector(fb: np.ndarray, model: dict) -> Tuple[int, np.ndarray]:
+def classify_vector(fb: np.ndarray, model: dict):
     fz = (fb - model["muF"].squeeze()) / model["sigmaF"].squeeze()
     dists = np.sqrt(((model["centroids"] - fz) ** 2).sum(axis=1))
-    pred = int(np.argmin(dists))  # 0..N-1
+    pred = int(np.argmin(dists))
     return pred, dists
 
-# ====================== Predicción desde carpeta ========================================
+# ====================== Grabación por micrófono ================================
+def record_one_take_sr(seconds: float, sr: int, warmup_s: float) -> np.ndarray:
+    """
+    Graba 'seconds' segundos en mono int16 al muestreo 'sr'.
+    Hace un breve warmup para estabilizar dispositivos.
+    Devuelve float32 en [-1,1] con longitud exacta sr*seconds.
+    """
+    sd.default.samplerate = sr
+    sd.default.channels = 1
+
+    # warmup opcional
+    if warmup_s > 0:
+        _ = sd.rec(int(warmup_s * sr), dtype="int16")
+        sd.wait()
+
+    print(f"[rec] Grabando {seconds:.2f}s a {sr} Hz desde el micrófono…")
+    rec = sd.rec(int(seconds * sr), dtype="int16")
+    sd.wait()
+
+    x_i16 = rec.reshape(-1)
+    x = (x_i16.astype(np.float32) / 32768.0).clip(-1.0, 1.0)
+    return x
+
+# ====================== Predicción desde carpeta / Micrófono ===================
 def main():
     if len(sys.argv) < 2:
-        print("Uso: python prediccion_desde_carpeta.py <ruta_run_YYYYMMDD_HHMMSS>")
+        print("Uso: python prediccion_desde_microfono.py <ruta_run_YYYYMMDD_HHMMSS>")
         sys.exit(1)
 
     run_dir = sys.argv[1]
     if not os.path.isdir(run_dir):
-        print(f"[fatal] Carpeta no encontrada: {run_dir}")
+        print(f("[fatal] Carpeta no encontrada: {run_dir}"))
         sys.exit(1)
 
     model = build_model_from_folder(run_dir)
@@ -219,7 +181,7 @@ def main():
     Nsamples_take = int(sr * take_seconds)
     band_edges = model["band_edges"]; names = model["names"]; fmax = model["fmax"]
 
-    # 1) Si hay test_*.wav en la carpeta, los clasificamos
+    # 1) Clasificar si ya hay test_*.wav
     test_files = sorted(glob.glob(os.path.join(run_dir, "test_*.wav")))
     if test_files:
         print(f"[info] Encontrados {len(test_files)} archivos de prueba en la carpeta.")
@@ -230,93 +192,55 @@ def main():
                 continue
             if x.size > Nsamples_take: x = x[:Nsamples_take]
             elif x.size < Nsamples_take: x = np.pad(x, (0, Nsamples_take - x.size))
+            # === NUEVO: normalización RMS por toma ===
+            rms = float(np.sqrt(np.mean(x**2)) + 1e-12)
+            x = (x / rms).clip(-1.0, 1.0)
             fb = features_fft_bands(x, sr, band_edges)
             pred, dists = classify_vector(fb, model)
             print(f"[pred] {os.path.basename(path)} -> {names[pred]}  (distancias: {', '.join(f'{d:.3f}' for d in dists)})")
             plot_test_fft(x, sr, run_dir, i, pred+1, fmax=fmax)
         sys.exit(0)
 
-    # 2) Si no hay test_*.wav y está habilitado, grabamos pruebas nuevas con el ESP32
+    # 2) Si no hay test_*.wav y está habilitado, grabamos con micrófono
     if not RECORD_TESTS_IF_MISSING:
         print("[info] No hay test_*.wav y RECORD_TESTS_IF_MISSING=False. Nada que hacer.")
         sys.exit(0)
 
-    print("[net] No hay pruebas en disco. Abriendo servidor para grabar pruebas…")
-
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try: s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCKET_RCVBUF)
-    except Exception: pass
-    try:
-        print(f"[bind] {HOST}:{PORT}"); s.bind((HOST, PORT))
-    except OSError as e:
-        print(f"[warn] bind falló: {e}; reintentando en 0.0.0.0"); s.bind(("0.0.0.0", PORT))
-    s.listen(1); print("[ok] Esperando conexión del ESP32…")
-    conn, addr = s.accept()
-
-    try:
-        try: conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        except Exception: pass
-        print(f"[net] Conexión desde {addr}")
-
-        if not _auth_handshake(conn, SHARED_KEY, AUTH_TIMEOUT):
-            print("[auth] FALLIDO"); return
-        print("[auth] OK")
-
-        # WAV header
-        hdr = _recv_exact(conn, 44)
-        if hdr is None: print("[wav] No se recibió cabecera WAV"); return
-        # Validación simple (no re-usamos el parser completo)
-        if hdr[0:4] != b"RIFF" or hdr[8:12] != b"WAVE":
-            print("[wav] Cabecera no WAVE"); return
-
-        bytes_per_sample = 2; ch = 1
-        align = bytes_per_sample * ch
-        Nbytes_take = Nsamples_take * align
-
-        preds = []
-        for j in range(1, N_TESTS+1):
+    print("[mic] No hay pruebas en disco. Usaremos el micrófono local para grabar pruebas.")
+    preds = []
+    for j in range(1, N_TESTS+1):
+        try:
             input(f"\n>> Prueba {j}/{N_TESTS}: Presiona Enter y habla {take_seconds:.1f}s…")
-            drain_socket(conn, max_drain_sec=0.5)
-            warm_bytes = int(WARMUP_SECONDS * sr * align)
-            if warm_bytes > 0: _ = recv_audio_bytes(conn, warm_bytes)
+        except EOFError:
+            print("[ui] stdin no disponible; continuando sin pausa")
 
-            print(f"[rec] Capturando {take_seconds:.1f}s (~{Nbytes_take} bytes)")
-            payload = recv_audio_bytes(conn, Nbytes_take)
-            if payload is None:
-                print("[net] Conexión cerrada durante captura de prueba"); break
+        x = record_one_take_sr(take_seconds, sr, WARMUP_SECONDS)
 
-            usable = len(payload) - (len(payload) % align)
-            payload = payload[:usable]
-            x_i16 = np.frombuffer(payload, dtype="<i2")
-            x = (x_i16.astype(np.float32) / 32768.0).clip(-1.0, 1.0)
-            if x.size > Nsamples_take: x = x[:Nsamples_take]
-            elif x.size < Nsamples_take: x = np.pad(x, (0, Nsamples_take - x.size))
+        if x.size > Nsamples_take: x = x[:Nsamples_take]
+        elif x.size < Nsamples_take: x = np.pad(x, (0, Nsamples_take - x.size))
 
-            # Guardar WAV en la MISMA carpeta run
-            wav_name = os.path.join(run_dir, f"test_{j}.wav")
-            with wave.open(wav_name, "wb") as wf:
-                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
-                wf.writeframes((x * 32767.0).astype("<i2").tobytes())
-            print(f"[ok] Guardado {wav_name}")
+        # === NUEVO: normalización RMS por toma ===
+        rms = float(np.sqrt(np.mean(x**2)) + 1e-12)
+        x = (x / rms).clip(-1.0, 1.0)
 
-            fb = features_fft_bands(x, sr, band_edges)
-            pred, dists = classify_vector(fb, model)
-            preds.append(pred+1)
-            print(f"[pred] Prueba {j} -> {names[pred]}  (distancias: {', '.join(f'{d:.3f}' for d in dists)})")
-            plot_test_fft(x, sr, run_dir, j, pred+1, fmax=fmax)
+        wav_name = os.path.join(run_dir, f"test_{j}.wav")
+        with wave.open(wav_name, "wb") as wf:
+            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
+            wf.writeframes((x * 32767.0).astype("<i2").tobytes())
+        print(f"[ok] Guardado {wav_name}")
 
-        if preds:
-            with open(os.path.join(run_dir, "predictions.csv"), "w", encoding="utf-8") as f:
-                f.write("prueba,prediccion\n")
-                for i,p in enumerate(preds,1):
-                    f.write(f"{i},{p}\n")
-            print(f"[ok] Predicciones guardadas en {os.path.join(run_dir,'predictions.csv')}")
+        fb = features_fft_bands(x, sr, band_edges)
+        pred, dists = classify_vector(fb, model)
+        preds.append(pred+1)
+        print(f"[pred] Prueba {j} -> {names[pred]}  (distancias: {', '.join(f'{d:.3f}' for d in dists)})")
+        plot_test_fft(x, sr, run_dir, j, pred+1, fmax=fmax)
 
-    finally:
-        try: conn.close()
-        except Exception: pass
-        s.close()
+    if preds:
+        with open(os.path.join(run_dir, "predictions.csv"), "w", encoding="utf-8") as f:
+            f.write("prueba,prediccion\n")
+            for i,p in enumerate(preds,1):
+                f.write(f"{i},{p}\n")
+        print(f"[ok] Predicciones guardadas en {os.path.join(run_dir,'predictions.csv')}")
 
 if __name__ == "__main__":
     main()
