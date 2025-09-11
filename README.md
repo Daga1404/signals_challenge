@@ -1,275 +1,305 @@
-# Signals Challenge
+# Voice Recognition System with ESP32-S3
 
-A comprehensive signal processing project featuring real-time frequency detection, wireless audio streaming, and voice identification using ESP32, Python, and MATLAB.
+A comprehensive voice identification system that uses an ESP32-S3 microcontroller for audio capture and Python for machine learning-based voice recognition. The system can record training samples from multiple people and then classify new voice samples to identify the speaker.
 
 ## 🎯 Project Overview
 
-This project combines **real-time signal processing**, **wireless communication**, and **machine learning** to create a complete audio analysis system with two main components:
+This project implements a complete voice recognition pipeline consisting of:
 
-1. **Real-time Frequency Detection System** - ESP32 captures audio and streams it wirelessly to a Python server for real-time frequency analysis
-2. **Voice Identification System** - MATLAB-based speaker recognition using feature extraction and centroid classification
-
-## ✨ Features
-
-### Real-time Audio Processing
-- **High-quality audio capture** using ESP32-S3 with I2S PDM microphone
-- **Advanced DSP pipeline** with filtering, noise gating, and soft limiting
-- **Secure wireless streaming** with HMAC-SHA256 authentication
-- **Real-time frequency detection** using FFT with parabolic interpolation
-- **Sub-bin frequency resolution** for precise tone detection
-
-### Voice Identification
-- **Multi-speaker voice recording** and dataset creation
-- **Feature extraction** (log energy, zero-crossing rate, spectral features)
-- **Centroid-based classification** for speaker identification
-- **Real-time voice recognition** with confidence scoring
-
-### Signal Processing Techniques
-- Fast Fourier Transform (FFT) analysis
-- Parabolic interpolation for sub-bin resolution
-- High-pass and low-pass filtering
-- Noise gate with attack/release parameters
-- Soft clipping limiter
-- Spectral centroid and bandwidth analysis
+- **ESP32-S3 Audio Capture**: Real-time audio streaming with built-in DSP processing
+- **Voice Training**: Recording and processing voice samples from multiple speakers
+- **Machine Learning Classification**: FFT-based feature extraction with centroid classification
+- **Real-time Prediction**: Live voice classification via TCP streaming
 
 ## 🛠️ Hardware Requirements
 
-### ESP32 Setup
+### ESP32-S3 Setup
 - **ESP32-S3** development board
-- **I2S PDM microphone** (connected to pins 41/42)
-- **WiFi connection** (2.4 GHz)
-- **Power supply** (USB or external)
+- **I2S Microphone** (compatible with ESP32-S3 I2S interface)
+- **WiFi Network** (2.4GHz) for TCP communication
+- **Micro-USB Cable** for programming and power
 
-### Development Environment
-- **Python 3.7+** with NumPy
-- **Arduino IDE** with ESP32 board support
-- **MATLAB** R2018b or newer
+### Microphone Connection
+The system expects an I2S microphone connected to the ESP32-S3. Ensure proper I2S pin configuration in your hardware setup.
 
-## 📦 Software Dependencies
+## 📦 Software Requirements
 
-### Python Requirements
+### Arduino Environment
+- **Arduino IDE** or **PlatformIO**
+- **ESP32 Board Package** (ESP32-S3 support)
+- Required libraries:
+  - `WiFi` (built-in)
+  - `ESP_I2S` 
+  - `mbedtls` (for HMAC-SHA256)
+
+### Python Environment
+- **Python 3.7+**
+- Required packages:
 ```bash
-pip install numpy
+pip install numpy matplotlib python-dotenv
 ```
 
-### Arduino Libraries
-- ESP_I2S
-- WiFi
-- mbedtls (for HMAC)
+**Note**: `wave`, `socket`, `hmac`, and other modules are part of Python's standard library.
 
-### MATLAB Toolboxes
-- Signal Processing Toolbox
-- Audio Toolbox
+## ⚙️ Configuration
+
+### 1. Create Configuration File
+Create a `config.h` file in the Arduino project directory:
+
+```cpp
+// config.h
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// WiFi Configuration
+#define WIFI_SSID     "YourWiFiNetwork"
+#define WIFI_PASSWORD "YourWiFiPassword"
+
+// Network Configuration  
+#define TCP_PORT      8888
+#define SHARED_KEY_HEX "your_64_character_hex_key_here"
+
+// I2S Pin Configuration (adjust for your hardware)
+#define I2S_WS    42  // Word Select (LRCLK)
+#define I2S_SD    41  // Serial Data 
+#define I2S_SCK   40  // Serial Clock (BCLK)
+
+#endif
+```
+
+### 2. Create Environment File
+Create a `.env` file in the project root:
+
+```bash
+# .env
+ESP_HOST=192.168.1.100  # IP address of your computer (not ESP32)
+ESP_PORT=8888
+ESP_SHARED_KEY_HEX=your_64_character_hex_key_here
+```
+
+**Finding Your Computer's IP**: 
+- Windows: `ipconfig`
+- Linux/macOS: `ip addr` or `ifconfig`
+- The ESP32 will connect TO this address (your computer runs the server)
+
+**Note**: The `SHARED_KEY_HEX` must be the same in both `config.h` and `.env` files.
+
+### Generating a Secure Key
+To generate a secure 64-character hex key:
+```bash
+# Linux/macOS
+openssl rand -hex 32
+
+# Python
+python -c "import secrets; print(secrets.token_hex(32))"
+```
 
 ## 🚀 Quick Start
 
-### 1. ESP32 Audio Streaming Setup
-
-1. **Configure WiFi credentials** in `src/audio_for_signals.ino`:
-   ```cpp
-   const char* SSID = "YOUR_WIFI_SSID";
-   const char* PASS = "YOUR_WIFI_PASSWORD";
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd signals_challenge
    ```
 
-2. **Set server IP** in the Arduino code:
-   ```cpp
-   #define AUDIO_SERVER_IP "192.168.1.100"  // Your Python server IP
+2. **Install Python dependencies**
+   ```bash
+   pip install numpy matplotlib python-dotenv
    ```
 
-3. **Upload the sketch** to your ESP32-S3
+3. **Configure the system** (create `config.h` and `.env` as described above)
 
-4. **Connect I2S PDM microphone**:
-   - Clock pin: GPIO 42
-   - Data pin: GPIO 41
+4. **Upload ESP32 firmware** (using Arduino IDE)
 
-### 2. Python Frequency Detection Server
-
-1. **Update server configuration** in `src/main.py`:
-   ```python
-   HOST = "0.0.0.0"  # Replace with your Python server IP
-   PORT = 12345
-   ```
-
-2. **Create the missing actions.py file**:
-   ```python
-   # src/actions.py
-   def route_frequency(freq_hz: float, confidence_db: float) -> bool:
-       """
-       Route detected frequencies to specific actions.
-       
-       Args:
-           freq_hz: Detected frequency in Hz
-           confidence_db: Detection confidence in dB
-           
-       Returns:
-           bool: True if action was triggered, False otherwise
-       """
-       # Example: Trigger action for tones between 440-880 Hz with high confidence
-       if 440 <= freq_hz <= 880 and confidence_db > 10:
-           print(f"🎵 Musical note detected: {freq_hz:.1f} Hz")
-           return True
-       return False
-   ```
-
-3. **Run the server**:
+5. **Record training data**
    ```bash
    cd src
-   python main.py
+   python sample_recorder.py
    ```
 
-### 3. Voice Identification (MATLAB)
-
-1. **Record voice samples**:
-   ```matlab
-   cd Matlab
-   run('recopilacion_datos.m')
+6. **Test voice classification**
+   ```bash
+   python main.py run_YYYYMMDD_HHMMSS/
    ```
-   - Follow prompts to record 3 voice samples per person
-   - Data is saved as `datos_YOURNAME.mat`
 
-2. **Train and test voice recognition**:
-   ```matlab
-   run('Identificacion_voz.m')
+## 📋 Detailed Usage
+
+### Phase 1: Training Data Collection
+
+1. **Upload Arduino Code**
+   ```bash
+   # Open audio_for_signals.ino in Arduino IDE
+   # Select Board: "ESP32S3 Dev Module" 
+   # Select Port: (your ESP32-S3 port)
+   # Upload the sketch
    ```
-   - Loads all voice data files
-   - Trains centroid-based classifier
-   - Records new sample and predicts speaker
+   
+   **Important**: Make sure to select the correct ESP32-S3 board variant in Arduino IDE. The serial monitor will show WiFi connection status and audio system initialization.
+
+2. **Record Training Samples**
+   ```bash
+   cd src
+   python sample_recorder.py
+   ```
+   
+   The script will:
+   - Wait for ESP32 connection
+   - Guide you through recording 5 samples per person (configurable)
+   - Save WAV files as `train_p{person}_t{take}.wav`
+   - Generate time-domain and frequency plots
+   - Create metadata file `meta.npz`
+
+### Phase 2: Voice Classification
+
+3. **Run Classification**
+   ```bash
+   python main.py run_YYYYMMDD_HHMMSS/
+   ```
+   
+   The system will:
+   - Load training data and build the model
+   - Look for existing test files or record new ones
+   - Classify voice samples and show predictions
+   - Save results to `predictions.csv`
 
 ## 📁 Project Structure
 
 ```
 signals_challenge/
+├── audio_for_signals.ino    # ESP32-S3 firmware
 ├── src/
-│   ├── main.py              # Python frequency detection server
-│   ├── audio_for_signals.ino # ESP32 audio capture and streaming
-│   └── actions.py           # Frequency routing logic (create this file)
-├── Matlab/
-│   ├── recopilacion_datos.m   # Voice data collection script
-│   ├── Identificacion_voz.m   # Voice identification script
-│   ├── datos_David.mat        # Voice data for David
-│   ├── datos_Gal.mat         # Voice data for Gal
-│   └── datos_gabo.mat        # Voice data for gabo
-└── README.md
+│   ├── sample_recorder.py   # Training data collection
+│   └── main.py             # Voice classification
+├── config.h                # Arduino configuration (create this)
+├── .env                    # Python environment variables (create this)
+└── run_YYYYMMDD_HHMMSS/    # Generated training data folders
+    ├── meta.npz            # Training metadata
+    ├── train_p1_t1.wav     # Training samples
+    ├── train_p1_t2.wav
+    ├── ...
+    ├── test_1.wav          # Test samples (optional)
+    ├── predictions.csv     # Classification results
+    └── *.png              # Generated plots
 ```
 
-## 🔧 Configuration
+## 🔧 Technical Details
 
-### Audio Parameters
+### Audio Processing
 - **Sample Rate**: 16 kHz
-- **Bit Depth**: 16-bit
-- **Channels**: Mono
-- **Buffer Size**: 256 samples
-- **Frame Rate**: ~62.5 Hz
+- **Format**: 16-bit mono PCM
+- **Recording Length**: 3 seconds per sample
+- **DSP Features**:
+  - High-pass filter (DC removal)
+  - Low-pass filter (anti-aliasing)
+  - Noise gate with hysteresis
+  - Soft clipping limiter
 
-### Network Security
-- **Authentication**: HMAC-SHA256
-- **Shared Key**: 256-bit hex key (configurable)
-- **Protocol**: TCP with custom handshake
+### Machine Learning
+- **Feature Extraction**: FFT-based frequency bands (80 Hz - 5 kHz, 12 bands)
+- **Preprocessing**: Z-score normalization
+- **Classification**: Centroid-based distance classification
+- **Model**: Simple but effective for voice identification
 
-### DSP Parameters
-```cpp
-#define VOLUME_GAIN        3.0f     // Audio gain multiplier
-#define GATE_ATTACK_MS     5        // Gate attack time
-#define GATE_RELEASE_MS    60       // Gate release time
-#define THRESH_OPEN        120.0f   // Gate open threshold
-#define THRESH_CLOSE       60.0f    // Gate close threshold
-```
+### Network Protocol
+- **Transport**: TCP sockets
+- **Authentication**: HMAC-SHA256 challenge-response
+- **Audio Format**: WAV stream with 44-byte header
+- **Security**: Shared key prevents unauthorized connections
 
-## 🎛️ Usage Examples
+## 🎛️ Configuration Parameters
 
-### Frequency Detection
-The system can detect and analyze:
-- **Musical tones** and instruments
-- **Voice frequencies** and formants
-- **Environmental sounds** and signals
-- **Ultrasonic frequencies** (up to 8 kHz)
+### Default Settings (Configurable in Code)
 
-### Voice Recognition Applications
-- **Smart home control** with voice commands
-- **Security systems** with speaker verification
-- **Audio logging** with automatic speaker tagging
-- **Educational tools** for voice analysis
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `N_PERSONS` | 3 | Number of people to train |
+| `N_TAKES_TRAIN` | 5 | Samples per person |
+| `TAKE_SECONDS` | 3.0 | Recording length |
+| `PERSON_NAMES` | ["david", "gal", "gabo"] | Speaker names |
+| `SAMPLE_RATE` | 16000 | Audio sample rate |
+| `N_TESTS` | 4 | Number of test samples |
 
-## 🔬 Technical Details
+### DSP Parameters (ESP32)
 
-### Frequency Detection Algorithm
-1. **Audio preprocessing** with Hann windowing
-2. **Zero-padding** to next power of 2
-3. **Real FFT** computation
-4. **Peak detection** in magnitude spectrum
-5. **Parabolic interpolation** for sub-bin accuracy
-6. **Confidence estimation** using signal-to-noise ratio
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `VOLUME_GAIN` | 3.0 | Input gain multiplier |
+| `THRESH_OPEN` | 120.0 | Noise gate open threshold |
+| `THRESH_CLOSE` | 60.0 | Noise gate close threshold |
+| `GATE_ATTACK_MS` | 5 | Gate attack time |
+| `GATE_RELEASE_MS` | 60 | Gate release time |
 
-### Voice Recognition Pipeline
-1. **Feature extraction**:
-   - Log energy
-   - Zero-crossing rate
-   - Spectral centroid
-   - Spectral bandwidth
-2. **Training**: Compute feature centroids per speaker
-3. **Classification**: Nearest centroid using Euclidean distance
-
-### Communication Protocol
-1. **TCP connection** establishment
-2. **HMAC authentication** with device MAC address
-3. **WAV header** transmission
-4. **Continuous audio streaming** in 256-sample chunks
-
-## 🐛 Troubleshooting
+## 🔍 Troubleshooting
 
 ### Common Issues
 
-**ESP32 won't connect to WiFi:**
-- Check SSID/password configuration
-- Ensure 2.4 GHz network (5 GHz not supported)
-- Verify signal strength and range
+**ESP32 Won't Connect to WiFi**
+- Verify SSID and password in `config.h`
+- Ensure 2.4GHz network (ESP32 doesn't support 5GHz)
+- Check signal strength and range
+- Review serial output for connection details
 
-**Python server connection fails:**
-- Check firewall settings
-- Verify IP address configuration
-- Ensure port 12345 is available
+**Authentication Failed**
+- Verify `SHARED_KEY_HEX` matches in both files
+- Ensure key is exactly 64 hexadecimal characters
+- Check firewall settings on host computer
 
-**Audio quality issues:**
-- Check microphone connections
+**Audio Quality Issues**
+- Verify I2S microphone connections
+- Check microphone power supply
 - Adjust DSP parameters (gain, thresholds)
-- Verify I2S pin configuration
+- Ensure proper grounding
 
-**MATLAB recording problems:**
-- Check audio device permissions
-- Verify Audio Toolbox installation
-- Adjust recording parameters if needed
+**Python Connection Issues**
+- Verify ESP32 IP address in `.env` file
+- Check if port 8888 is available
+- Disable firewall temporarily for testing
+- Ensure both devices are on same network
 
-## 🎓 Educational Applications
+**Poor Classification Accuracy**
+- Record more training samples per person
+- Ensure consistent recording conditions
+- Check for background noise
+- Verify microphone placement
 
-This project demonstrates key concepts in:
-- **Digital Signal Processing** (FFT, filtering, windowing)
-- **Embedded Systems** (ESP32, I2S, real-time processing)
-- **Network Programming** (TCP, authentication, protocols)
-- **Machine Learning** (feature extraction, classification)
-- **Audio Processing** (frequency analysis, voice recognition)
+### Debug Output
+
+The system provides extensive logging:
+- ESP32 serial output shows WiFi and audio status
+- Python scripts show network, authentication, and processing steps
+- Generated plots help visualize audio quality
+
+## 🎨 Generated Outputs
+
+The system creates several visualization files:
+- **Time-domain plots**: Show raw audio waveforms for each speaker
+- **Frequency-domain plots**: Display FFT analysis of voice characteristics
+- **Test classification plots**: Visualize features used for prediction
+
+## 📈 Performance Notes
+
+- **Latency**: ~250ms warmup + recording time
+- **Accuracy**: Depends on training data quality and speaker distinctiveness
+- **Memory**: ESP32 uses ~256-sample audio buffers
+- **Network**: Optimized for local network usage
 
 ## 🔮 Future Enhancements
 
-- **Multi-channel audio** support
-- **Advanced ML models** (neural networks)
-- **Real-time visualization** web interface
-- **Mobile app** integration
-- **Cloud-based processing** and storage
-- **Multiple ESP32 nodes** for distributed sensing
+Potential improvements:
+- Support for more sophisticated ML models
+- Real-time continuous recognition
+- Multiple microphone array support
+- Web interface for easy operation
+- Mobile app integration
 
 ## 📄 License
 
-This project is open source. Feel free to modify and extend for educational and research purposes.
+This project is provided as-is for educational and research purposes.
 
 ## 🤝 Contributing
 
-Contributions are welcome! Areas for improvement:
-- Additional signal processing algorithms
-- Enhanced voice recognition models
-- Web-based user interface
-- Documentation and examples
-- Hardware integration guides
+Feel free to submit issues, feature requests, or pull requests to improve the system.
 
 ---
 
-*Built with ❤️ for signal processing education and research*
+**Note**: This is a signals processing educational project. For production voice recognition systems, consider using more advanced ML frameworks and security measures.
